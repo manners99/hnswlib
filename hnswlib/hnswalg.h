@@ -2,6 +2,7 @@
 
 #include "visited_list_pool.h"
 #include "hnswlib.h"
+#include "lsh.h"
 #include <atomic>
 #include <random>
 #include <stdlib.h>
@@ -70,6 +71,12 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     std::mutex deleted_elements_lock;  // lock for deleted_elements
     std::unordered_set<tableint> deleted_elements;  // contains internal ids of deleted elements
 
+    // LSH for immediate graph connectivity repair
+    std::unique_ptr<diskann::LSH> lsh_index_{nullptr};
+    bool enable_lsh_repair_{false};
+    int lsh_num_tables_{6};
+    int lsh_num_hashes_{6};
+
 
     HierarchicalNSW(SpaceInterface<dist_t> *s) {
     }
@@ -92,11 +99,17 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         size_t M = 16,
         size_t ef_construction = 200,
         size_t random_seed = 100,
-        bool allow_replace_deleted = false)
+        bool allow_replace_deleted = false, 
+        bool enable_lsh_repair = false, 
+        int lsh_num_tables = 6, 
+        int lsh_num_hashes = 6)
         : label_op_locks_(MAX_LABEL_OPERATION_LOCKS),
             link_list_locks_(max_elements),
             element_levels_(max_elements),
-            allow_replace_deleted_(allow_replace_deleted) {
+            allow_replace_deleted_(allow_replace_deleted),
+            enable_lsh_repair_(enable_lsh_repair),
+            lsh_num_tables_(lsh_num_tables),
+            lsh_num_hashes_(lsh_num_hashes) {
         max_elements_ = max_elements;
         num_deleted_ = 0;
         data_size_ = s->get_data_size();
@@ -141,6 +154,12 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         size_links_per_element_ = maxM_ * sizeof(tableint) + sizeof(linklistsizeint);
         mult_ = 1 / log(1.0 * M_);
         revSize_ = 1.0 / mult_;
+
+        // Initialize LSH if enabled
+        if (enable_lsh_repair_) {
+            size_t dim = data_size_ / sizeof(float);  // Assuming float vectors
+            lsh_index_.reset(new diskann::LSH(lsh_num_tables_, lsh_num_hashes_, dim));
+        }
     }
 
 
@@ -848,6 +867,184 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
 
     /*
+    * LSH-based connectivity repair functions
+    */
+    void addToLSH(const void *data_point, tableint internal_id) {
+        if (!enable_lsh_repair_ || !lsh_index_) return;
+        
+        // Convert data_point to Eigen::VectorXd
+        size_t dim = data_size_ / sizeof(float);
+        const float* float_data = static_cast<const float*>(data_point);
+        Eigen::VectorXd eigen_point(dim);
+        
+        for (size_t i = 0; i < dim; i++) {
+            eigen_point[i] = static_cast<double>(float_data[i]);
+        }
+        
+        lsh_index_->add(eigen_point, static_cast<int>(internal_id));
+    }
+    
+    void repairNeighborsImmediately(tableint deleted_node) {
+        // Get all neighbors of the node being deleted
+        std::vector<tableint> neighbors_to_check;
+        
+        // Check all levels of the deleted node
+        for (int level = 0; level <= element_levels_[deleted_node]; level++) {
+            linklistsizeint *ll_cur = get_linklist_at_level(deleted_node, level);
+            int size = getListCount(ll_cur);
+            tableint *data = (tableint *)(ll_cur + 1);
+            
+            for (int i = 0; i < size; i++) {
+                if (!isMarkedDeleted(data[i])) {
+                    neighbors_to_check.push_back(data[i]);
+                }
+            }
+        }
+        
+        // Check and repair each neighbor
+        for (tableint neighbor_id : neighbors_to_check) {
+            checkAndRepairNodeConnectivity(neighbor_id, deleted_node);
+        }
+    }
+    
+    void checkAndRepairNodeConnectivity(tableint node_id, tableint deleted_neighbor) {
+        // Remove the deleted neighbor from this node's connections
+        removeConnectionToDeletedNode(node_id, deleted_neighbor);
+        
+        // Check if node needs additional connections (falls below minimum)
+        if (needsAdditionalConnections(node_id)) {
+            repairNodeWithLSH(node_id);
+        }
+    }
+    
+    void removeConnectionToDeletedNode(tableint node_id, tableint deleted_node) {
+        for (int level = 0; level <= element_levels_[node_id]; level++) {
+            std::unique_lock<std::mutex> lock(link_list_locks_[node_id]);
+            
+            linklistsizeint *ll_cur = get_linklist_at_level(node_id, level);
+            int size = getListCount(ll_cur);
+            tableint *data = (tableint *)(ll_cur + 1);
+            
+            // Find and remove the deleted node
+            for (int i = 0; i < size; i++) {
+                if (data[i] == deleted_node) {
+                    // Shift remaining connections
+                    for (int j = i; j < size - 1; j++) {
+                        data[j] = data[j + 1];
+                    }
+                    setListCount(ll_cur, size - 1);
+                    break;
+                }
+            }
+        }
+    }
+    
+    bool needsAdditionalConnections(tableint node_id) {
+        linklistsizeint *ll_cur = get_linklist0(node_id);
+        int current_connections = 0;
+        int size = getListCount(ll_cur);
+        tableint *data = (tableint *)(ll_cur + 1);
+        
+        // Count valid (non-deleted) connections
+        for (int i = 0; i < size; i++) {
+            if (!isMarkedDeleted(data[i])) {
+                current_connections++;
+            }
+        }
+        
+        // Need repair if connections fall below a minimum threshold
+        int min_connections = std::max(1, static_cast<int>(M_ / 2));
+        return current_connections < min_connections;
+    }
+    
+    void repairNodeWithLSH(tableint node_id) {
+        // Get the node's data
+        char* node_data = getDataByInternalId(node_id);
+        
+        // Convert to Eigen format for LSH query
+        size_t dim = data_size_ / sizeof(float);
+        const float* float_data = reinterpret_cast<const float*>(node_data);
+        Eigen::VectorXd eigen_point(dim);
+        
+        for (size_t i = 0; i < dim; i++) {
+            eigen_point[i] = static_cast<double>(float_data[i]);
+        }
+        
+        // Find LSH candidates
+        std::vector<int> lsh_candidates = lsh_index_->query(eigen_point);
+        
+        // Convert to potential neighbors and select best ones
+        std::vector<std::pair<dist_t, tableint>> potential_neighbors;
+        
+        for (int candidate_internal_id : lsh_candidates) {
+            if (candidate_internal_id != node_id && 
+                !isMarkedDeleted(candidate_internal_id) &&
+                candidate_internal_id < cur_element_count &&
+                !alreadyConnected(node_id, candidate_internal_id)) {
+                
+                // Calculate actual distance
+                dist_t distance = fstdistfunc_(node_data, 
+                    getDataByInternalId(candidate_internal_id), dist_func_param_);
+                
+                potential_neighbors.emplace_back(distance, candidate_internal_id);
+            }
+        }
+        
+        // Sort by distance and connect to closest available neighbors
+        std::sort(potential_neighbors.begin(), potential_neighbors.end());
+        
+        // Add the best new connections
+        size_t max_new_connections = std::min(static_cast<size_t>(M_ / 2), 
+                                             potential_neighbors.size());
+        
+        for (size_t i = 0; i < max_new_connections; i++) {
+            addBidirectionalConnection(node_id, potential_neighbors[i].second);
+        }
+    }
+    
+    bool alreadyConnected(tableint node1, tableint node2) {
+        linklistsizeint *ll_cur = get_linklist0(node1);
+        int size = getListCount(ll_cur);
+        tableint *data = (tableint *)(ll_cur + 1);
+        
+        for (int i = 0; i < size; i++) {
+            if (data[i] == node2) {
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    void addBidirectionalConnection(tableint node1, tableint node2) {
+        // Add node2 to node1's connections
+        {
+            std::unique_lock<std::mutex> lock(link_list_locks_[node1]);
+            linklistsizeint *ll_cur = get_linklist0(node1);
+            int size = getListCount(ll_cur);
+            
+            if (size < maxM0_) {
+                tableint *data = (tableint *)(ll_cur + 1);
+                data[size] = node2;
+                setListCount(ll_cur, size + 1);
+            }
+        }
+        
+        // Add node1 to node2's connections
+        {
+            std::unique_lock<std::mutex> lock(link_list_locks_[node2]);
+            linklistsizeint *ll_cur = get_linklist0(node2);
+            int size = getListCount(ll_cur);
+            
+            if (size < maxM0_) {
+                tableint *data = (tableint *)(ll_cur + 1);
+                data[size] = node1;
+                setListCount(ll_cur, size + 1);
+            }
+        }
+    }
+
+
+    /*
     * Marks an element with the given label deleted, does NOT really change the current graph.
     */
     void markDelete(labeltype label) {
@@ -873,6 +1070,11 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     void markDeletedInternal(tableint internalId) {
         assert(internalId < cur_element_count);
         if (!isMarkedDeleted(internalId)) {
+            // Check and repair neighbors immediately before marking as deleted
+            if (enable_lsh_repair_ && lsh_index_) {
+                repairNeighborsImmediately(internalId);
+            }
+            
             unsigned char *ll_cur = ((unsigned char *)get_linklist0(internalId))+2;
             *ll_cur |= DELETE_MARK;
             num_deleted_ += 1;
@@ -959,7 +1161,12 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         // lock all operations with element by label
         std::unique_lock <std::mutex> lock_label(getLabelOpMutex(label));
         if (!replace_deleted) {
-            addPoint(data_point, label, -1);
+            tableint internal_id = addPoint(data_point, label, -1);
+            
+            // Add to LSH index after successful HNSW insertion
+            if (enable_lsh_repair_ && lsh_index_) {
+                addToLSH(data_point, internal_id);
+            }
             return;
         }
         // check if there is vacant place

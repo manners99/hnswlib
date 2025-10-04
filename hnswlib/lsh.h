@@ -11,11 +11,10 @@
 #include <cmath>
 //use "sudo apt-get install libeigen3-dev" to intall Eigen library
 
-//Hash key type is vector<int> representing a binary hash
-using HashKey = std::vector<int>;
-
 namespace diskann
 {
+    //Hash key type is vector<int> representing a binary hash
+    using HashKey = std::vector<int>;
     struct HashKeyHash {
         std::size_t operator()(const HashKey& key) const {
             std::size_t h = 0;
@@ -51,9 +50,9 @@ namespace diskann
         LSH(int numTables, int numHashes, int dimension)
             : numTables(numTables), numHashes(numHashes), dimension(dimension), tables(numTables), gen(std::random_device{}()), dist(0.0, 1.0)
             {
-                std::cerr << "LSH constructor called: tables=" << numTables 
-                << ", numHashes=" << numHashes 
-                << ", dimension=" << dimension << std::endl;
+                // std::cerr << "LSH constructor called: tables=" << numTables 
+                // << ", numHashes=" << numHashes 
+                // << ", dimension=" << dimension << std::endl;
 
                 //reserve the outer vectores
                 tables.reserve(numTables);
@@ -119,27 +118,27 @@ namespace diskann
             }
 
             std::vector<int> query(const Eigen::VectorXd& queryPoint) {
-                std::cout << "[QUERY] Querying for point " << queryPoint.transpose() << std::endl;
+                // std::cout << "[QUERY] Querying for point " << queryPoint.transpose() << std::endl;
                 std::set<int> candidateIds;
                 std::vector<HashKey> hashes = generateHash(queryPoint);
 
                 for (int i = 0; i < numTables; i++) {
                     auto it = tables[i].find(hashes[i]);
                     if (it != tables[i].end()) {
-                        std::cout << "  [TABLE " << i << "] Bicket contains: ";
+                        // std::cout << "  [TABLE " << i << "] Bicket contains: ";
                         for (int id : it -> second) {
-                            std::cout << id << " ";
+                            //std::cout << id << " ";
                             candidateIds.insert(id);
                         }
-                        std::cout << std::endl;
+                        // std::cout << std::endl;
                     } else {
-                        std::cout << "  [TABLE " << i << "] Bucket is empty" << std::endl;
+                        // std::cout << "  [TABLE " << i << "] Bucket is empty" << std::endl;
                     }
                 }
 
-                std::cout << "[QUERY_RESULT] Candidates found: ";
-                for (int id : candidateIds) std::cout << id << " ";
-                std::cout << std::endl;
+                // std::cout << "[QUERY_RESULT] Candidates found: ";
+                // for (int id : candidateIds) std::cout << id << " ";
+                // std::cout << std::endl;
 
                 return std::vector<int>(candidateIds.begin(), candidateIds.end());
             }

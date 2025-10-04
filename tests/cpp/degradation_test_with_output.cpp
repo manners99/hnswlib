@@ -102,12 +102,12 @@ TestMetrics analyzeGraph(hnswlib::HierarchicalNSW<float>* index,
     TestMetrics metrics;
     metrics.iteration = iteration;
     
-    // Generate fresh query data for each iteration from current base data
-    std::mt19937 rng(42 + iteration);  // Different seed each iteration
+    // Generate query data with fixed seed for consistent comparison
+    std::mt19937 rng(1337);  // Fixed seed for identical queries across runs
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
     std::vector<float> query_data(100 * dimension);
     for (int i = 0; i < 100 * dimension; i++) {
-        query_data[i] = dist(rng);  // Fresh random queries each iteration
+        query_data[i] = dist(rng);  // Fixed queries for comparison consistency
     }
     
     // Measure search performance with proper ground truth from brute force
@@ -272,10 +272,13 @@ int main(int argc, char* argv[]) {
     // Query data is now generated fresh each iteration in analyzeGraph()
     
     std::cout << "Building HNSW index..." << std::endl;
+    bool enable_lsh_repair = true;
+    std::cout << enable_lsh_repair << std::endl;
     StopW build_timer;
     hnswlib::L2Space space(dimension);
     hnswlib::HierarchicalNSW<float>* index = new hnswlib::HierarchicalNSW<float>(
-        &space, initial_vectors * 2, M, ef_construction, 42, true);
+        &space, initial_vectors * 2, M, ef_construction, 42, true, enable_lsh_repair);
+        //                                                         enable_lsh_repair = true
 
     // Create brute force index for ground truth
     hnswlib::BruteforceSearch<float>* brute_force = new hnswlib::BruteforceSearch<float>(
