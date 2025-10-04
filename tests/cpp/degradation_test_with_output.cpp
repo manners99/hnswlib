@@ -277,8 +277,8 @@ int main(int argc, char* argv[]) {
     StopW build_timer;
     hnswlib::L2Space space(dimension);
     hnswlib::HierarchicalNSW<float>* index = new hnswlib::HierarchicalNSW<float>(
-        &space, initial_vectors * 2, M, ef_construction, 42, true, enable_lsh_repair);
-        //                                                         enable_lsh_repair = true
+        &space, initial_vectors * 2, M, ef_construction, 42, true, enable_lsh_repair, 10, 10);
+        //                                                         enable_lsh_repair = true, tables, hashes
 
     // Create brute force index for ground truth
     hnswlib::BruteforceSearch<float>* brute_force = new hnswlib::BruteforceSearch<float>(
