@@ -32,6 +32,16 @@ def create_graphs(csv_file, output_dir="graphs"):
     # 1. Recall over time
     plt.figure(figsize=fig_size)
     plt.plot(df['iteration'], df['recall'], 'b-', linewidth=2, label='Recall')
+    
+    # Add trendline from iteration 2 onwards
+    if len(df) > 2:
+        trend_data = df[df['iteration'] >= 2]
+        if len(trend_data) > 1:
+            z = np.polyfit(trend_data['iteration'], trend_data['recall'], 1)
+            p = np.poly1d(z)
+            plt.plot(trend_data['iteration'], p(trend_data['iteration']), 'r--', 
+                    linewidth=2, alpha=0.8, label=f'Trend (iter 2+): slope={z[0]:.4f}')
+    
     plt.xlabel('Iteration')
     plt.ylabel('Recall')
     plt.title('Search Recall Degradation Over Time')
@@ -129,10 +139,21 @@ def create_graphs(csv_file, output_dir="graphs"):
     
     # Create subplots with shared x-axis
     ax1 = plt.subplot(3, 2, 1)
-    plt.plot(df['iteration'], df['recall'], 'b-', linewidth=2)
+    plt.plot(df['iteration'], df['recall'], 'b-', linewidth=2, label='Recall')
+    
+    # Add trendline from iteration 2 onwards
+    if len(df) > 2:
+        trend_data = df[df['iteration'] >= 2]
+        if len(trend_data) > 1:
+            z = np.polyfit(trend_data['iteration'], trend_data['recall'], 1)
+            p = np.poly1d(z)
+            plt.plot(trend_data['iteration'], p(trend_data['iteration']), 'r--', 
+                    linewidth=1.5, alpha=0.8, label=f'Trend: {z[0]:.4f}/iter')
+    
     plt.ylabel('Recall')
     plt.title('Recall Degradation')
     plt.grid(True, alpha=0.3)
+    plt.legend(fontsize=8)
     
     ax2 = plt.subplot(3, 2, 2)
     plt.plot(df['iteration'], df['disconnected_nodes'], 'r-', linewidth=2)
