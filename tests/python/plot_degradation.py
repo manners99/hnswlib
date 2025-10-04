@@ -33,14 +33,14 @@ def create_graphs(csv_file, output_dir="graphs"):
     plt.figure(figsize=fig_size)
     plt.plot(df['iteration'], df['recall'], 'b-', linewidth=2, label='Recall')
     
-    # Add trendline from iteration 2 onwards
-    if len(df) > 2:
-        trend_data = df[df['iteration'] >= 2]
+    # Add trendline from iteration 1 onwards
+    if len(df) > 1:
+        trend_data = df[df['iteration'] >= 1]
         if len(trend_data) > 1:
             z = np.polyfit(trend_data['iteration'], trend_data['recall'], 1)
             p = np.poly1d(z)
             plt.plot(trend_data['iteration'], p(trend_data['iteration']), 'r--', 
-                    linewidth=2, alpha=0.8, label=f'Trend (iter 2+): slope={z[0]:.4f}')
+                    linewidth=2, alpha=0.8, label=f'Trend (iter 1+): slope={z[0]:.4f}')
     
     plt.xlabel('Iteration')
     plt.ylabel('Recall')
@@ -141,9 +141,9 @@ def create_graphs(csv_file, output_dir="graphs"):
     ax1 = plt.subplot(3, 2, 1)
     plt.plot(df['iteration'], df['recall'], 'b-', linewidth=2, label='Recall')
     
-    # Add trendline from iteration 2 onwards
-    if len(df) > 2:
-        trend_data = df[df['iteration'] >= 2]
+    # Add trendline from iteration 1 onwards
+    if len(df) > 1:
+        trend_data = df[df['iteration'] >= 1]
         if len(trend_data) > 1:
             z = np.polyfit(trend_data['iteration'], trend_data['recall'], 1)
             p = np.poly1d(z)
