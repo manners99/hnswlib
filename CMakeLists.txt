@@ -100,6 +100,18 @@ if(HNSWLIB_EXAMPLES)
     add_executable(multiThread_replace_test tests/cpp/multiThread_replace_test.cpp)
     target_link_libraries(multiThread_replace_test hnswlib)
 
+    add_executable(graph_degradation_test tests/cpp/graph_degradation_test.cpp)
+    target_link_libraries(graph_degradation_test hnswlib)
+
+    add_executable(quick_degradation_test tests/cpp/quick_degradation_test.cpp)
+    target_link_libraries(quick_degradation_test hnswlib)
+
+    add_executable(sift_degradation_test tests/cpp/sift_degradation_test.cpp)
+    target_link_libraries(sift_degradation_test hnswlib)
+
+    add_executable(large_sift_degradation_test tests/cpp/large_sift_degradation_test.cpp)
+    target_link_libraries(large_sift_degradation_test hnswlib)
+
     add_executable(main tests/cpp/main.cpp tests/cpp/sift_1b.cpp)
     target_link_libraries(main hnswlib)
 endif()
