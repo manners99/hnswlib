@@ -244,7 +244,7 @@ int main(int argc, char* argv[]) {
     // LSH configuration
     bool enable_lsh_repair = true;
     int lsh_num_tables = 8;
-    int lsh_num_hashes = 16;
+    int lsh_num_hashes = 10;
     
     // Generate output filenames based on LSH configuration
     std::string base_filename;
