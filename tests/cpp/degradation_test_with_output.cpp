@@ -220,9 +220,20 @@ int main(int argc, char* argv[]) {
     int M = 16;
     int ef_construction = 200;
     
-    // Generate output filenames
-    std::string csv_filename = generateFilename("degradation_test", "csv");
-    std::string log_filename = generateFilename("degradation_test", "log");
+    // LSH configuration
+    bool enable_lsh_repair = true;
+    int lsh_num_tables = 8;
+    int lsh_num_hashes = 16;
+    
+    // Generate output filenames based on LSH configuration
+    std::string base_filename;
+    if (enable_lsh_repair) {
+        base_filename = "degradation_test_lsh_" + std::to_string(lsh_num_tables) + "x" + std::to_string(lsh_num_hashes);
+    } else {
+        base_filename = "degradation_test_vanilla_hnsw";
+    }
+    std::string csv_filename = generateFilename(base_filename, "csv");
+    std::string log_filename = generateFilename(base_filename, "log");
     
     std::cout << "Configuration:" << std::endl;
     std::cout << "  Initial vectors: " << initial_vectors << std::endl;
@@ -232,6 +243,11 @@ int main(int argc, char* argv[]) {
     std::cout << "  HNSW M: " << M << std::endl;
     std::cout << "  HNSW ef_construction: " << ef_construction << std::endl;
     std::cout << "  HNSW ef_search: " << std::max(400, initial_vectors / 100) << std::endl;
+    std::cout << "  LSH repair enabled: " << (enable_lsh_repair ? "Yes" : "No") << std::endl;
+    if (enable_lsh_repair) {
+        std::cout << "  LSH tables: " << lsh_num_tables << std::endl;
+        std::cout << "  LSH hashes per table: " << lsh_num_hashes << std::endl;
+    }
     std::cout << "  Output CSV: " << csv_filename << std::endl;
     std::cout << "  Output log: " << log_filename << std::endl;
     std::cout << std::endl;
@@ -255,6 +271,15 @@ int main(int argc, char* argv[]) {
     log_file << "Deletion batch: " << deletion_batch_size << std::endl;
     log_file << "Insertion batch: " << insertion_batch_size << std::endl;
     log_file << "Iterations: " << num_iterations << std::endl;
+    log_file << "HNSW M: " << M << std::endl;
+    log_file << "HNSW ef_construction: " << ef_construction << std::endl;
+    log_file << "HNSW ef_search: " << std::max(400, initial_vectors / 100) << std::endl;
+    log_file << "LSH repair enabled: " << (enable_lsh_repair ? "Yes" : "No") << std::endl;
+    if (enable_lsh_repair) {
+        log_file << "LSH tables: " << lsh_num_tables << std::endl;
+        log_file << "LSH hashes per table: " << lsh_num_hashes << std::endl;
+        log_file << "Total LSH hyperplanes: " << (lsh_num_tables * lsh_num_hashes) << std::endl;
+    }
     auto now = std::time(nullptr);
     log_file << "Timestamp: " << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S") << std::endl;
     log_file << std::endl;
@@ -272,13 +297,11 @@ int main(int argc, char* argv[]) {
     // Query data is now generated fresh each iteration in analyzeGraph()
     
     std::cout << "Building HNSW index..." << std::endl;
-    bool enable_lsh_repair = true;
-    std::cout << enable_lsh_repair << std::endl;
+    std::cout << "LSH repair enabled: " << (enable_lsh_repair ? "Yes" : "No") << std::endl;
     StopW build_timer;
     hnswlib::L2Space space(dimension);
     hnswlib::HierarchicalNSW<float>* index = new hnswlib::HierarchicalNSW<float>(
-        &space, initial_vectors * 2, M, ef_construction, 42, true, enable_lsh_repair, 10, 10);
-        //                                                         enable_lsh_repair = true, tables, hashes
+        &space, initial_vectors * 2, M, ef_construction, 42, true, enable_lsh_repair, lsh_num_tables, lsh_num_hashes);
 
     // Create brute force index for ground truth
     hnswlib::BruteforceSearch<float>* brute_force = new hnswlib::BruteforceSearch<float>(
