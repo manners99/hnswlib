@@ -1047,9 +1047,18 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         if (!isMarkedDeleted(internalId)) {
             // Step 1: Remove from LSH index if enabled
             if (enable_lsh_repair_ && lsh_index_) {
-                // Remove this point from LSH
-                // Note: LSH removal would need to be implemented in the LSH class
-                // For now, we'll repair neighbors and then remove from graph
+                // Get the vector data to remove from LSH
+                void* data_point = getDataByInternalId(internalId);
+                float* float_data = static_cast<float*>(data_point);
+                size_t dim = data_size_ / sizeof(float);
+                
+                // Convert to Eigen vector for LSH removal
+                Eigen::VectorXd eigen_point(dim);
+                for (size_t i = 0; i < dim; i++) {
+                    eigen_point[i] = static_cast<double>(float_data[i]);
+                }
+                
+                lsh_index_->remove(eigen_point, static_cast<int>(internalId));
             }
             
             // Step 2: Repair neighbors immediately before removal

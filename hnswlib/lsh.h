@@ -48,7 +48,7 @@ namespace diskann
 
     public:
         LSH(int numTables, int numHashes, int dimension)
-            : numTables(numTables), numHashes(numHashes), dimension(dimension), tables(numTables), gen(std::random_device{}()), dist(0.0, 1.0)
+            : numTables(numTables), numHashes(numHashes), dimension(dimension), tables(numTables), gen(42), dist(0.0, 1.0) // Fixed seed for reproducibility. Change to std::randome_device{}() for non-deterministic
             {
                 // std::cerr << "LSH constructor called: tables=" << numTables 
                 // << ", numHashes=" << numHashes 
@@ -114,6 +114,25 @@ namespace diskann
                     // std::cout << "  [TABLE " << i << "] Inserted " << id << " into bucket (";
                     // for (int bit : hashes[i]) std::cout << bit;
                     // std::cout << ")" << std::endl;
+                }
+            }
+
+            void remove(const Eigen::VectorXd& point, int id) {
+                //std::cout << "[REMOVE] Removing point " << id << ": " << point.transpose() << std::endl;
+                std::vector<HashKey> hashes = generateHash(point);
+                for (int i = 0; i < numTables; i++) {
+                    auto it = tables[i].find(hashes[i]);
+                    if (it != tables[i].end()) {
+                        auto& vec = it->second;
+                        vec.erase(std::remove(vec.begin(), vec.end(), id), vec.end());
+                        // std::cout << "  [TABLE " << i << "] Removed " << id << " from bucket (";
+                        // for (int bit : hashes[i]) std::cout << bit;
+                        // std::cout << ")" << std::endl;
+                        if (vec.empty()) {
+                            tables[i].erase(it);
+                            // std::cout << "  [TABLE " << i << "] Bucket is now empty and removed" << std::endl;
+                        }
+                    }
                 }
             }
 
