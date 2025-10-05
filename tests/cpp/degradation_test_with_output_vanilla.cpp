@@ -111,13 +111,13 @@ TestMetrics analyzeGraph(hnswlib::HierarchicalNSW<float>* index,
     }
     
     // Measure search performance with proper ground truth from brute force
-    StopW search_timer;
     int total_queries = 100;
     int total_correct = 0;
     int total_results = 0;
+    double total_hnsw_search_time_micro = 0.0;
     
     for (int i = 0; i < total_queries; i++) {
-        // Get ground truth from brute force
+        // Get ground truth from brute force (not timed)
         auto gt_result = brute_force->searchKnn(query_data.data() + i * dimension, k);
         std::unordered_set<hnswlib::labeltype> gt_set;
         while (!gt_result.empty()) {
@@ -125,10 +125,12 @@ TestMetrics analyzeGraph(hnswlib::HierarchicalNSW<float>* index,
             gt_result.pop();
         }
         
-        // Get HNSW results
+        // Time only the HNSW search
+        StopW hnsw_search_timer;
         auto hnsw_result = index->searchKnn(query_data.data() + i * dimension, k);
+        total_hnsw_search_time_micro += hnsw_search_timer.getElapsedTimeMicro();
         
-        // Count correct results
+        // Count correct results (not timed)
         while (!hnsw_result.empty()) {
             if (gt_set.find(hnsw_result.top().second) != gt_set.end()) {
                 total_correct++;
@@ -139,7 +141,7 @@ TestMetrics analyzeGraph(hnswlib::HierarchicalNSW<float>* index,
     }
     
     metrics.recall = total_results > 0 ? static_cast<double>(total_correct) / total_results : 0.0;
-    metrics.search_time_ms = search_timer.getElapsedTimeMicro() / 1000.0;
+    metrics.search_time_ms = total_hnsw_search_time_micro / 1000.0;
     
     // Analyze graph structure
     int cur_element_count = index->cur_element_count;
@@ -220,6 +222,12 @@ int main(int argc, char* argv[]) {
     int M = 16;
     int ef_construction = 200;
     
+    // LSH configuration
+    // LSH parameters (disabled for vanilla HNSW)
+    bool enable_lsh_repair = false;
+    int lsh_num_tables = 0;
+    int lsh_num_hashes = 0;
+    
     // Generate output filenames
     std::string base_filename = "degradation_test_vanilla_hnsw";
     std::string csv_filename = generateFilename(base_filename, "csv");
@@ -266,7 +274,7 @@ int main(int argc, char* argv[]) {
     log_file << std::endl;
     
     std::cout << "Generating synthetic SIFT-like data..." << std::endl;
-    std::mt19937 rng(42);  // Fixed seed for deterministic results
+    std::mt19937 rng(42);
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);  // Match Python: [0,1] range
     
     // Generate base data
@@ -274,6 +282,8 @@ int main(int argc, char* argv[]) {
     for (int i = 0; i < initial_vectors * dimension; i++) {
         base_data[i] = dist(rng);
     }
+    
+    // Query data is now generated fresh each iteration in analyzeGraph()
     
     std::cout << "Building HNSW index..." << std::endl;
     StopW build_timer;
@@ -299,9 +309,7 @@ int main(int argc, char* argv[]) {
     // Set search ef parameter for better recall (scale with dataset size)
     int search_ef = std::max(400, initial_vectors / 100);  // Higher ef for larger datasets
     index->setEf(search_ef);
-    std::cout << "Set search ef to: " << search_ef << std::endl;
-    
-    log_file << "Index build time: " << build_time << " seconds" << std::endl;
+    std::cout << "Set search ef to: " << search_ef << std::endl;    log_file << "Index build time: " << build_time << " seconds" << std::endl;
     log_file << std::endl;
     
     // Track active labels
