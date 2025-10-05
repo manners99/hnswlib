@@ -111,13 +111,13 @@ TestMetrics analyzeGraph(hnswlib::HierarchicalNSW<float>* index,
     }
     
     // Measure search performance with proper ground truth from brute force
-    StopW search_timer;
     int total_queries = 100;
     int total_correct = 0;
     int total_results = 0;
+    double total_hnsw_search_time_micro = 0.0;
     
     for (int i = 0; i < total_queries; i++) {
-        // Get ground truth from brute force
+        // Get ground truth from brute force (not timed)
         auto gt_result = brute_force->searchKnn(query_data.data() + i * dimension, k);
         std::unordered_set<hnswlib::labeltype> gt_set;
         while (!gt_result.empty()) {
@@ -125,10 +125,12 @@ TestMetrics analyzeGraph(hnswlib::HierarchicalNSW<float>* index,
             gt_result.pop();
         }
         
-        // Get HNSW results
+        // Time only the HNSW search
+        StopW hnsw_search_timer;
         auto hnsw_result = index->searchKnn(query_data.data() + i * dimension, k);
+        total_hnsw_search_time_micro += hnsw_search_timer.getElapsedTimeMicro();
         
-        // Count correct results
+        // Count correct results (not timed)
         while (!hnsw_result.empty()) {
             if (gt_set.find(hnsw_result.top().second) != gt_set.end()) {
                 total_correct++;
@@ -139,7 +141,7 @@ TestMetrics analyzeGraph(hnswlib::HierarchicalNSW<float>* index,
     }
     
     metrics.recall = total_results > 0 ? static_cast<double>(total_correct) / total_results : 0.0;
-    metrics.search_time_ms = search_timer.getElapsedTimeMicro() / 1000.0;
+    metrics.search_time_ms = total_hnsw_search_time_micro / 1000.0;
     
     // Analyze graph structure
     int cur_element_count = index->cur_element_count;
