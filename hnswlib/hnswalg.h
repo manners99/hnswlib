@@ -77,6 +77,12 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     int lsh_num_tables_{6};
     int lsh_num_hashes_{6};
 
+    // LSH repair statistics
+    mutable std::atomic<long> lsh_repair_calls_{0};         // Number of times needsAdditionalConnections was called
+    mutable std::atomic<long> lsh_repairs_performed_{0};    // Number of times repair was actually done
+    mutable std::atomic<long> lsh_queries_made_{0};        // Number of LSH queries performed
+    mutable std::atomic<long> lsh_connections_added_{0};    // Number of new connections added via LSH
+
 
     HierarchicalNSW(SpaceInterface<dist_t> *s) {
     }
@@ -885,23 +891,19 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     }
     
     void repairNeighborsImmediately(tableint deleted_node) {
-        // Get all neighbors of the node being deleted
-        std::vector<tableint> neighbors_to_check;
+        // Get all neighbors of the node being deleted from layer 0 only
+        std::unordered_set<tableint> neighbors_to_check;  // Use set to avoid duplicates
         
-        // Check all levels of the deleted node
-        for (int level = 0; level <= element_levels_[deleted_node]; level++) {
-            linklistsizeint *ll_cur = get_linklist_at_level(deleted_node, level);
-            int size = getListCount(ll_cur);
-            tableint *data = (tableint *)(ll_cur + 1);
-            
-            for (int i = 0; i < size; i++) {
-                if (!isMarkedDeleted(data[i])) {
-                    neighbors_to_check.push_back(data[i]);
-                }
-            }
+        // Only check layer 0 since that's where most connectivity matters
+        linklistsizeint *ll_cur = get_linklist0(deleted_node);  // Layer 0 only
+        int size = getListCount(ll_cur);
+        tableint *data = (tableint *)(ll_cur + 1);
+        
+        for (int i = 0; i < size; i++) {
+            neighbors_to_check.insert(data[i]);  // Set automatically deduplicates
         }
         
-        // Check and repair each neighbor
+        // Check and repair each unique neighbor
         for (tableint neighbor_id : neighbors_to_check) {
             checkAndRepairNodeConnectivity(neighbor_id, deleted_node);
         }
@@ -915,24 +917,25 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     }
     
     bool needsAdditionalConnections(tableint node_id) {
+        lsh_repair_calls_.fetch_add(1, std::memory_order_relaxed);  // Count repair checks
+        
         linklistsizeint *ll_cur = get_linklist0(node_id);
         int current_connections = 0;
         int size = getListCount(ll_cur);
         tableint *data = (tableint *)(ll_cur + 1);
         
-        // Count valid (non-deleted) connections
+        // Count valid connections (all connections are valid since nodes are removed immediately)
         for (int i = 0; i < size; i++) {
-            if (!isMarkedDeleted(data[i])) {
-                current_connections++;
-            }
+            current_connections++;
         }
         
-        // Need repair if connections fall below a minimum threshold
-        int min_connections = std::max(1, static_cast<int>(M_ / 2));
-        return current_connections < min_connections;
+        // Run LSH repair if node has fewer than M/2 connections
+        return current_connections < M_ / 2;
     }
     
     void repairNodeWithLSH(tableint node_id) {
+        lsh_repairs_performed_.fetch_add(1, std::memory_order_relaxed);  // Count actual repairs
+        
         // Get the node's data
         char* node_data = getDataByInternalId(node_id);
         
@@ -947,15 +950,23 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         
         // Find LSH candidates
         std::vector<int> lsh_candidates = lsh_index_->query(eigen_point);
+        lsh_queries_made_.fetch_add(1, std::memory_order_relaxed);  // Count LSH queries
         
         // Convert to potential neighbors and select best ones
+        std::set<tableint> alreadyConnected;
+        linklistsizeint *ll_cur = get_linklist0(node_id);
+        int size = getListCount(ll_cur);
+        tableint *data = (tableint *)(ll_cur + 1);
+        for (int i = 0; i < size; i++) {
+            alreadyConnected.insert(data[i]);
+        }
+        
         std::vector<std::pair<dist_t, tableint>> potential_neighbors;
         
         for (int candidate_internal_id : lsh_candidates) {
             if (candidate_internal_id != node_id && 
-                !isMarkedDeleted(candidate_internal_id) &&
                 candidate_internal_id < cur_element_count &&
-                !alreadyConnected(node_id, candidate_internal_id)) {
+                alreadyConnected.find(candidate_internal_id) == alreadyConnected.end()) {
                 
                 // Calculate actual distance
                 dist_t distance = fstdistfunc_(node_data, 
@@ -974,6 +985,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         
         for (size_t i = 0; i < max_new_connections; i++) {
             addBidirectionalConnection(node_id, potential_neighbors[i].second);
+            lsh_connections_added_.fetch_add(1, std::memory_order_relaxed);  // Count new connections
         }
     }
     
@@ -988,6 +1000,45 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             }
         }
         return false;
+    }
+    
+    // LSH repair statistics getters
+    long getLSHRepairCalls() const { return lsh_repair_calls_.load(std::memory_order_relaxed); }
+    long getLSHRepairsPerformed() const { return lsh_repairs_performed_.load(std::memory_order_relaxed); }
+    long getLSHQueriesMade() const { return lsh_queries_made_.load(std::memory_order_relaxed); }
+    long getLSHConnectionsAdded() const { return lsh_connections_added_.load(std::memory_order_relaxed); }
+    
+    // Reset LSH repair statistics
+    void resetLSHRepairStats() {
+        lsh_repair_calls_.store(0, std::memory_order_relaxed);
+        lsh_repairs_performed_.store(0, std::memory_order_relaxed);
+        lsh_queries_made_.store(0, std::memory_order_relaxed);
+        lsh_connections_added_.store(0, std::memory_order_relaxed);
+    }
+    
+    // Batch repair for efficiency - collects all affected neighbors first
+    void batchRepairAfterDeletions(const std::vector<tableint>& deleted_nodes) {
+        if (!enable_lsh_repair_ || !lsh_index_) return;
+        
+        std::unordered_set<tableint> all_affected_neighbors;
+        
+        // Collect all unique neighbors affected by all deletions (layer 0 only)
+        for (tableint deleted_node : deleted_nodes) {
+            linklistsizeint *ll_cur = get_linklist0(deleted_node);  // Layer 0 only
+            int size = getListCount(ll_cur);
+            tableint *data = (tableint *)(ll_cur + 1);
+            
+            for (int i = 0; i < size; i++) {
+                all_affected_neighbors.insert(data[i]);
+            }
+        }
+        
+        // Check and repair each unique neighbor only once
+        for (tableint neighbor_id : all_affected_neighbors) {
+            if (needsAdditionalConnections(neighbor_id)) {
+                repairNodeWithLSH(neighbor_id);
+            }
+        }
     }
     
     void addBidirectionalConnection(tableint node1, tableint node2) {

@@ -37,10 +37,17 @@ struct TestMetrics {
     double iteration_time_seconds;
     double cumulative_time_seconds;
     
+    // LSH repair statistics
+    long lsh_repair_calls;
+    long lsh_repairs_performed;
+    long lsh_queries_made;
+    long lsh_connections_added;
+    
     void writeCSVHeader(std::ofstream& file) {
         file << "iteration,active_elements,deleted_elements,recall,search_time_ms,"
              << "total_connections,disconnected_nodes,avg_inbound,min_inbound,max_inbound,"
-             << "connectivity_density,iteration_time_seconds,cumulative_time_seconds\n";
+             << "connectivity_density,iteration_time_seconds,cumulative_time_seconds,"
+             << "lsh_repair_calls,lsh_repairs_performed,lsh_queries_made,lsh_connections_added\n";
     }
     
     void writeCSVRow(std::ofstream& file) {
@@ -52,7 +59,9 @@ struct TestMetrics {
              << min_inbound_connections << "," << max_inbound_connections << ","
              << std::setprecision(4) << connectivity_density << ","
              << std::setprecision(2) << iteration_time_seconds << ","
-             << std::setprecision(2) << cumulative_time_seconds << "\n";
+             << std::setprecision(2) << cumulative_time_seconds << ","
+             << lsh_repair_calls << "," << lsh_repairs_performed << ","
+             << lsh_queries_made << "," << lsh_connections_added << "\n";
     }
     
     void printConsole() {
@@ -64,6 +73,8 @@ struct TestMetrics {
                   << std::setw(8) << total_connections
                   << std::setw(6) << disconnected_nodes
                   << std::setw(8) << std::setprecision(1) << avg_inbound_connections
+                  << std::setw(6) << lsh_repairs_performed
+                  << std::setw(6) << lsh_connections_added
                   << std::setw(8) << std::setprecision(1) << iteration_time_seconds
                   << std::endl;
     }
@@ -77,6 +88,8 @@ struct TestMetrics {
                   << std::setw(8) << "Conns"
                   << std::setw(6) << "Disco"
                   << std::setw(8) << "AvgIn"
+                  << std::setw(6) << "Repair"
+                  << std::setw(6) << "NewCon"
                   << std::setw(8) << "IterSec"
                   << std::endl;
     }
@@ -196,6 +209,12 @@ TestMetrics analyzeGraph(hnswlib::HierarchicalNSW<float>* index,
     // Timing information
     metrics.iteration_time_seconds = iteration_timer.getElapsedTimeMicro() / 1000000.0;
     metrics.cumulative_time_seconds = total_timer.getElapsedTimeMicro() / 1000000.0;
+    
+    // LSH repair statistics
+    metrics.lsh_repair_calls = index->getLSHRepairCalls();
+    metrics.lsh_repairs_performed = index->getLSHRepairsPerformed();
+    metrics.lsh_queries_made = index->getLSHQueriesMade();
+    metrics.lsh_connections_added = index->getLSHConnectionsAdded();
     
     return metrics;
 }
@@ -356,9 +375,7 @@ int main(int argc, char* argv[]) {
             index->markDelete(active_labels.back());
             brute_force->removePoint(active_labels.back());
             active_labels.pop_back();
-        }
-        
-        // Insert new elements (reuse base data cyclically)
+        }        // Insert new elements (reuse base data cyclically)
         for (int i = 0; i < insertion_batch_size; i++) {
             int source_idx = (next_label - initial_vectors) % initial_vectors;
             index->addPoint(base_data.data() + source_idx * dimension, next_label, true);

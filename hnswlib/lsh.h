@@ -48,7 +48,7 @@ namespace diskann
 
     public:
         LSH(int numTables, int numHashes, int dimension)
-            : numTables(numTables), numHashes(numHashes), dimension(dimension), tables(numTables), gen(42), dist(0.0, 1.0) // Fixed seed for reproducibility. Change to std::randome_device{}() for non-deterministic
+            : numTables(numTables), numHashes(numHashes), dimension(dimension), tables(numTables), gen(std::random_device{}()), dist(0.0, 1.0) // Fixed seed for reproducibility. Change to std::randome_device{}() for non-deterministic
             {
                 // std::cerr << "LSH constructor called: tables=" << numTables 
                 // << ", numHashes=" << numHashes 
