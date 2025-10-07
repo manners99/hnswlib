@@ -365,7 +365,7 @@ int main(int argc, char* argv[]) {
     
     // Run degradation test
     for (int iter = 1; iter <= num_iterations; iter++) {
-        iteration_timer.reset();
+        StopW ops_timer; // Timer for just insertion/deletion operations
         
         // Delete elements
         std::shuffle(active_labels.begin(), active_labels.end(), rng);
@@ -384,8 +384,12 @@ int main(int argc, char* argv[]) {
             next_label++;
         }
         
-        // Analyze and log
+        double ops_time_seconds = ops_timer.getElapsedTimeMicro() / 1000000.0; // Capture ops time
+        
+        // Analyze and log (metrics computation not included in ops timing)
+        iteration_timer.reset(); // Reset for compatibility with analyzeGraph
         auto metrics = analyzeGraph(index, brute_force, base_data, dimension, k, iteration_timer, total_timer, iter);
+        metrics.iteration_time_seconds = ops_time_seconds; // Override with ops-only timing
         metrics.printConsole();
         metrics.writeCSVRow(csv_file);
         csv_file.flush();
