@@ -1,4 +1,5 @@
 #include "../../hnswlib/hnswlib.h"
+#include "fvecs_loader.h"
 #include <iostream>
 #include <vector>
 #include <random>
@@ -30,6 +31,7 @@ struct TestMetrics {
     double search_time_ms;
     int total_connections;
     int disconnected_nodes;
+    int unreachable_deleted_nodes;  // New: count of deleted nodes that are unreachable
     double avg_inbound_connections;
     int min_inbound_connections;
     int max_inbound_connections;
@@ -45,7 +47,7 @@ struct TestMetrics {
     
     void writeCSVHeader(std::ofstream& file) {
         file << "iteration,active_elements,deleted_elements,recall,search_time_ms,"
-             << "total_connections,disconnected_nodes,avg_inbound,min_inbound,max_inbound,"
+             << "total_connections,disconnected_nodes,unreachable_deleted_this_iter,avg_inbound,min_inbound,max_inbound,"
              << "connectivity_density,iteration_time_seconds,cumulative_time_seconds,"
              << "lsh_repair_calls,lsh_repairs_performed,lsh_queries_made,lsh_connections_added\n";
     }
@@ -54,7 +56,7 @@ struct TestMetrics {
         file << iteration << "," << active_elements << "," << deleted_elements << ","
              << std::fixed << std::setprecision(4) << recall << ","
              << std::setprecision(2) << search_time_ms << ","
-             << total_connections << "," << disconnected_nodes << ","
+             << total_connections << "," << disconnected_nodes << "," << unreachable_deleted_nodes << ","
              << std::setprecision(2) << avg_inbound_connections << ","
              << min_inbound_connections << "," << max_inbound_connections << ","
              << std::setprecision(4) << connectivity_density << ","
@@ -72,6 +74,7 @@ struct TestMetrics {
                   << std::setw(10) << std::setprecision(1) << search_time_ms
                   << std::setw(8) << total_connections
                   << std::setw(6) << disconnected_nodes
+                  << std::setw(7) << unreachable_deleted_nodes
                   << std::setw(8) << std::setprecision(1) << avg_inbound_connections
                   << std::setw(6) << lsh_repairs_performed
                   << std::setw(6) << lsh_connections_added
@@ -87,6 +90,7 @@ struct TestMetrics {
                   << std::setw(10) << "Time(ms)"
                   << std::setw(8) << "Conns"
                   << std::setw(6) << "Disco"
+                  << std::setw(7) << "UnrDel"
                   << std::setw(8) << "AvgIn"
                   << std::setw(6) << "Repair"
                   << std::setw(6) << "NewCon"
@@ -196,6 +200,9 @@ TestMetrics analyzeGraph(hnswlib::HierarchicalNSW<float>* index,
     metrics.total_connections = total_connections;
     metrics.disconnected_nodes = disconnected;
     
+    // Note: unreachable_deleted_nodes is set externally to track cumulative count
+    // of nodes that were already unreachable when they were deleted
+    
     if (!valid_inbound.empty()) {
         metrics.min_inbound_connections = *std::min_element(valid_inbound.begin(), valid_inbound.end());
         metrics.max_inbound_connections = *std::max_element(valid_inbound.begin(), valid_inbound.end());
@@ -224,43 +231,61 @@ int main(int argc, char* argv[]) {
     std::cout << "=======================================" << std::endl;
     
     // Test parameters - configurable via command line
+    int dimension = 128;              // Default SIFT dimension (use 960 for GIST)
     int initial_vectors = 100000;     // Default 100K
     int deletion_batch_size = 10000;  // Default 10K
     int insertion_batch_size = 10000; // Default 10K
     int num_iterations = 100;         // Default 100
-    int dimension = 128;              // SIFT dimension
-    int k = 10;
+    int k = 10;                       // Default k for recall testing
+    int M = 16;                       // Default HNSW M parameter
+    int ef_construction = 200;        // Default HNSW ef_construction
+    double lsh_repair_threshold = 0.1; // Default LSH repair threshold
     
     // Parse command line arguments
-    if (argc >= 2) initial_vectors = std::atoi(argv[1]);
-    if (argc >= 3) deletion_batch_size = std::atoi(argv[2]);
-    if (argc >= 4) insertion_batch_size = std::atoi(argv[3]);
-    if (argc >= 5) num_iterations = std::atoi(argv[4]);
+    if (argc >= 2) dimension = std::atoi(argv[1]);
+    if (argc >= 3) initial_vectors = std::atoi(argv[2]);
+    if (argc >= 4) deletion_batch_size = std::atoi(argv[3]);
+    if (argc >= 5) insertion_batch_size = std::atoi(argv[4]);
+    if (argc >= 6) num_iterations = std::atoi(argv[5]);
+    if (argc >= 7) k = std::atoi(argv[6]);
+    if (argc >= 8) M = std::atoi(argv[7]);
+    if (argc >= 9) ef_construction = std::atoi(argv[8]);
+    if (argc >= 10) lsh_repair_threshold = std::atof(argv[9]);
     
-    // HNSW parameters
-    int M = 16;
-    int ef_construction = 200;
+    // Determine dataset type based on dimension
+    std::string dataset_type = (dimension == 128) ? "SIFT" : "GIST";
+    std::string dataset_path;
+    
+    if (dataset_type == "SIFT") {
+        dataset_path = "../../datasets/sift/sift_base.fvecs";
+    } else {
+        dataset_path = "../../datasets/gist/gist_base.fvecs";
+    }
     
     // LSH configuration
-    bool enable_lsh_repair = true;
+    bool enable_lsh_repair = true;  // Disabled for vanilla HNSW true degradation test
     int lsh_num_tables = 8;
     int lsh_num_hashes = 10;
     
-    // Generate output filenames based on LSH configuration
+    // Generate output filenames based on LSH configuration and dataset
     std::string base_filename;
     if (enable_lsh_repair) {
-        base_filename = "degradation_test_lsh_" + std::to_string(lsh_num_tables) + "x" + std::to_string(lsh_num_hashes);
+        base_filename = "degradation_test_" + dataset_type + "_lsh_" + std::to_string(lsh_num_tables) + "x" + std::to_string(lsh_num_hashes);
     } else {
-        base_filename = "degradation_test_vanilla_hnsw";
+        base_filename = "degradation_test_" + dataset_type + "_vanilla_hnsw";
     }
     std::string csv_filename = generateFilename(base_filename, "csv");
     std::string log_filename = generateFilename(base_filename, "log");
     
     std::cout << "Configuration:" << std::endl;
+    std::cout << "  Dataset: " << dataset_type << " (real data)" << std::endl;
+    std::cout << "  Test Type: TRUE DEGRADATION (no node replacement)" << std::endl;
+    std::cout << "  Dimension: " << dimension << std::endl;
     std::cout << "  Initial vectors: " << initial_vectors << std::endl;
     std::cout << "  Deletion batch: " << deletion_batch_size << std::endl;
     std::cout << "  Insertion batch: " << insertion_batch_size << std::endl;
     std::cout << "  Iterations: " << num_iterations << std::endl;
+    std::cout << "  k (recall test): " << k << std::endl;
     std::cout << "  HNSW M: " << M << std::endl;
     std::cout << "  HNSW ef_construction: " << ef_construction << std::endl;
     std::cout << "  HNSW ef_search: " << std::max(400, initial_vectors / 100) << std::endl;
@@ -268,6 +293,7 @@ int main(int argc, char* argv[]) {
     if (enable_lsh_repair) {
         std::cout << "  LSH tables: " << lsh_num_tables << std::endl;
         std::cout << "  LSH hashes per table: " << lsh_num_hashes << std::endl;
+        std::cout << "  LSH repair threshold: " << lsh_repair_threshold << std::endl;
     }
     std::cout << "  Output CSV: " << csv_filename << std::endl;
     std::cout << "  Output log: " << log_filename << std::endl;
@@ -305,15 +331,48 @@ int main(int argc, char* argv[]) {
     log_file << "Timestamp: " << std::put_time(std::localtime(&now), "%Y-%m-%d %H:%M:%S") << std::endl;
     log_file << std::endl;
     
-    std::cout << "Generating synthetic SIFT-like data..." << std::endl;
-    std::mt19937 rng(42);
-    std::uniform_real_distribution<float> dist(0.0f, 1.0f);  // Match Python: [0,1] range
+    std::cout << "Loading real " << dataset_type << " dataset..." << std::endl;
     
-    // Generate base data
-    std::vector<float> base_data(initial_vectors * dimension);
-    for (int i = 0; i < initial_vectors * dimension; i++) {
-        base_data[i] = dist(rng);
+    // RNG for shuffling and fallback synthetic data generation
+    std::mt19937 rng(42);
+    
+    // Load real dataset
+    FvecsLoader::Dataset dataset;
+    try {
+        dataset = FvecsLoader::load_fvecs(dataset_path, initial_vectors);
+        
+        // Verify dimensions match
+        if (dataset.dimension != dimension) {
+            std::cerr << "Error: Dataset dimension (" << dataset.dimension 
+                      << ") doesn't match expected (" << dimension << ")" << std::endl;
+            return 1;
+        }
+        
+        // Adjust initial_vectors if dataset is smaller
+        if (dataset.num_vectors < initial_vectors) {
+            std::cout << "Warning: Dataset only has " << dataset.num_vectors 
+                      << " vectors, adjusting initial_vectors" << std::endl;
+            initial_vectors = dataset.num_vectors;
+        }
+        
+    } catch (const std::exception& e) {
+        std::cerr << "Error loading dataset: " << e.what() << std::endl;
+        std::cerr << "Falling back to synthetic data..." << std::endl;
+        
+        // Fallback to synthetic data
+        std::uniform_real_distribution<float> dist(0.0f, 1.0f);
+        dataset.data.resize(initial_vectors * dimension);
+        dataset.num_vectors = initial_vectors;
+        dataset.dimension = dimension;
+        
+        for (int i = 0; i < initial_vectors * dimension; i++) {
+            dataset.data[i] = dist(rng);
+        }
+        std::cout << "Generated synthetic " << dataset_type << "-like data" << std::endl;
     }
+    
+    // Extract base_data for compatibility with existing code
+    std::vector<float> base_data = dataset.data;
     
     // Query data is now generated fresh each iteration in analyzeGraph()
     
@@ -322,11 +381,11 @@ int main(int argc, char* argv[]) {
     StopW build_timer;
     hnswlib::L2Space space(dimension);
     hnswlib::HierarchicalNSW<float>* index = new hnswlib::HierarchicalNSW<float>(
-        &space, initial_vectors * 2, M, ef_construction, 42, true, enable_lsh_repair, lsh_num_tables, lsh_num_hashes);
+        &space, initial_vectors * 5, M, ef_construction, 42, false, enable_lsh_repair, lsh_num_tables, lsh_num_hashes, lsh_repair_threshold); // 5x capacity for growth without replacement
 
     // Create brute force index for ground truth
     hnswlib::BruteforceSearch<float>* brute_force = new hnswlib::BruteforceSearch<float>(
-        &space, initial_vectors * 2);
+        &space, initial_vectors * 5); // Match HNSW capacity
 
     for (int i = 0; i < initial_vectors; i++) {
         index->addPoint(base_data.data() + i * dimension, i);
@@ -359,6 +418,7 @@ int main(int argc, char* argv[]) {
     
     // Initial measurement
     auto initial_metrics = analyzeGraph(index, brute_force, base_data, dimension, k, iteration_timer, total_timer, 0);
+    initial_metrics.unreachable_deleted_nodes = 0; // No nodes deleted yet
     initial_metrics.printConsole();
     initial_metrics.writeCSVRow(csv_file);
     csv_file.flush();
@@ -367,18 +427,64 @@ int main(int argc, char* argv[]) {
     for (int iter = 1; iter <= num_iterations; iter++) {
         StopW ops_timer; // Timer for just insertion/deletion operations
         
-        // Delete elements
+        // Delete elements - check if they are disconnected before deletion
         std::shuffle(active_labels.begin(), active_labels.end(), rng);
         int actual_deletions = std::min(deletion_batch_size, static_cast<int>(active_labels.size()));
         
+        int unreachable_deleted_this_iteration = 0;
         for (int i = 0; i < actual_deletions; i++) {
-            index->markDelete(active_labels.back());
-            brute_force->removePoint(active_labels.back());
+            hnswlib::labeltype label_to_delete = active_labels.back();
+            
+            // Check if this node is disconnected (has 0 inbound connections) before deleting it
+            hnswlib::tableint internal_id;
+            {
+                std::unique_lock<std::mutex> lock_table(index->label_lookup_lock);
+                auto search = index->label_lookup_.find(label_to_delete);
+                if (search == index->label_lookup_.end()) {
+                    // Label not found, skip
+                    index->markDelete(label_to_delete);
+                    brute_force->removePoint(label_to_delete);
+                    active_labels.pop_back();
+                    continue;
+                }
+                internal_id = search->second;
+            }
+            
+            // Count inbound connections to this node
+            int inbound_count = 0;
+            for (int j = 0; j < index->cur_element_count; j++) {
+                if (j == internal_id || index->isMarkedDeleted(j)) continue;
+                
+                // Check all levels for connections to this node
+                for (int l = 0; l <= index->element_levels_[j]; l++) {
+                    auto ll_cur = index->get_linklist_at_level(j, l);
+                    int size = index->getListCount(ll_cur);
+                    hnswlib::tableint* data = (hnswlib::tableint*)(ll_cur + 1);
+                    
+                    for (int k = 0; k < size; k++) {
+                        if (data[k] == internal_id) {
+                            inbound_count++;
+                            break; // Found connection from this level
+                        }
+                    }
+                    if (inbound_count > 0) break; // Found connection, no need to check more levels
+                }
+                if (inbound_count > 0) break; // Found connection, no need to check more nodes
+            }
+            
+            // If node was disconnected before deletion, count it
+            if (inbound_count == 0) {
+                unreachable_deleted_this_iteration++;
+            }
+            
+            // Now delete the node
+            index->markDelete(label_to_delete);
+            brute_force->removePoint(label_to_delete);
             active_labels.pop_back();
-        }        // Insert new elements (reuse base data cyclically)
+        }        // Insert new elements (reuse base data cyclically) - TRUE DEGRADATION TEST
         for (int i = 0; i < insertion_batch_size; i++) {
             int source_idx = (next_label - initial_vectors) % initial_vectors;
-            index->addPoint(base_data.data() + source_idx * dimension, next_label, true);
+            index->addPoint(base_data.data() + source_idx * dimension, next_label, false); // FALSE = no replacement, true new nodes
             brute_force->addPoint(base_data.data() + source_idx * dimension, next_label);
             active_labels.push_back(next_label);
             next_label++;
@@ -390,6 +496,7 @@ int main(int argc, char* argv[]) {
         iteration_timer.reset(); // Reset for compatibility with analyzeGraph
         auto metrics = analyzeGraph(index, brute_force, base_data, dimension, k, iteration_timer, total_timer, iter);
         metrics.iteration_time_seconds = ops_time_seconds; // Override with ops-only timing
+        metrics.unreachable_deleted_nodes = unreachable_deleted_this_iteration; // Set per-iteration unreachable count
         metrics.printConsole();
         metrics.writeCSVRow(csv_file);
         csv_file.flush();

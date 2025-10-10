@@ -76,6 +76,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     bool enable_lsh_repair_{false};
     int lsh_num_tables_{6};
     int lsh_num_hashes_{6};
+    double lsh_repair_threshold_{0.5};  // Threshold for triggering LSH repair (fraction of M)
 
     // LSH repair statistics
     mutable std::atomic<long> lsh_repair_calls_{0};         // Number of times needsAdditionalConnections was called
@@ -108,14 +109,16 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         bool allow_replace_deleted = false, 
         bool enable_lsh_repair = false, 
         int lsh_num_tables = 6, 
-        int lsh_num_hashes = 6)
+        int lsh_num_hashes = 6,
+        double lsh_repair_threshold = 0.5)
         : label_op_locks_(MAX_LABEL_OPERATION_LOCKS),
             link_list_locks_(max_elements),
             element_levels_(max_elements),
             allow_replace_deleted_(allow_replace_deleted),
             enable_lsh_repair_(enable_lsh_repair),
             lsh_num_tables_(lsh_num_tables),
-            lsh_num_hashes_(lsh_num_hashes) {
+            lsh_num_hashes_(lsh_num_hashes),
+            lsh_repair_threshold_(lsh_repair_threshold) {
         max_elements_ = max_elements;
         num_deleted_ = 0;
         data_size_ = s->get_data_size();
@@ -929,8 +932,9 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
             current_connections++;
         }
         
-        // Run LSH repair if node has fewer than M/2 connections
-        return current_connections < M_ / 2;
+        // Run LSH repair if node has fewer than threshold * M connections
+        int min_connections = (int)(M_ * lsh_repair_threshold_);
+        return current_connections < min_connections;
     }
     
     void repairNodeWithLSH(tableint node_id) {
@@ -1117,8 +1121,10 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 repairNeighborsImmediately(internalId);
             }
             
-            // Step 3: Remove all connections TO this node from other nodes
-            removeAllIncomingConnections(internalId);
+            // Step 3: Remove all connections TO this node from other nodes (only if LSH enabled)
+            if (enable_lsh_repair_) {
+                removeAllIncomingConnections(internalId);
+            }
             
             // Step 4: Mark as deleted (existing flag mechanism)
             unsigned char *ll_cur = ((unsigned char *)get_linklist0(internalId))+2;
