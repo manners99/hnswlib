@@ -66,7 +66,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     mutable std::atomic<long> metric_distance_computations{0};
     mutable std::atomic<long> metric_hops{0};
 
-    bool allow_replace_deleted_ = false;  // flag to replace deleted elements (marked as deleted) during insertions
+    bool allow_replace_deleted_ = true;  // flag to replace deleted elements (marked as deleted) during insertions
 
     std::mutex deleted_elements_lock;  // lock for deleted_elements
     std::unordered_set<tableint> deleted_elements;  // contains internal ids of deleted elements
@@ -124,6 +124,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         data_size_ = s->get_data_size();
         fstdistfunc_ = s->get_dist_func();
         dist_func_param_ = s->get_dist_func_param();
+        
         if ( M <= 10000 ) {
             M_ = M;
         } else {
@@ -248,6 +249,14 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
 
     size_t getDeletedCount() {
         return num_deleted_;
+    }
+
+    tableint getEntryPoint() {
+        return enterpoint_node_;
+    }
+
+    int getElementLevel(tableint internal_id) {
+        return element_levels_[internal_id];
     }
 
     std::priority_queue<std::pair<dist_t, tableint>, std::vector<std::pair<dist_t, tableint>>, CompareByFirst>
@@ -1100,40 +1109,66 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     void markDeletedInternal(tableint internalId) {
         assert(internalId < cur_element_count);
         if (!isMarkedDeleted(internalId)) {
-            // Step 1: Remove from LSH index if enabled
-            if (enable_lsh_repair_ && lsh_index_) {
-                // Get the vector data to remove from LSH
+            // When both LSH repair and replacement are enabled, use delayed deletion strategy
+            if (enable_lsh_repair_ && allow_replace_deleted_) {
+                // Step 1: Remove from LSH index but keep graph structure for reuse
+                if (lsh_index_) {
+                    void* data_point = getDataByInternalId(internalId);
+                    float* float_data = static_cast<float*>(data_point);
+                    size_t dim = data_size_ / sizeof(float);
+                    
+                    Eigen::VectorXd eigen_point(dim);
+                    for (size_t i = 0; i < dim; i++) {
+                        eigen_point[i] = static_cast<double>(float_data[i]);
+                    }
+                    
+                    lsh_index_->remove(eigen_point, static_cast<int>(internalId));
+                }
+                
+                // Step 2: Mark as deleted but preserve connections for reuse
+                unsigned char *ll_cur = ((unsigned char *)get_linklist0(internalId))+2;
+                *ll_cur |= DELETE_MARK;
+                num_deleted_ += 1;
+                
+                // Step 3: Add to replacement pool without immediate cleanup
+                std::unique_lock <std::mutex> lock_deleted_elements(deleted_elements_lock);
+                deleted_elements.insert(internalId);
+                
+            } else if (enable_lsh_repair_ && lsh_index_) {
+                // LSH enabled but replacement disabled - immediate cleanup
+                // Step 1: Remove from LSH index
                 void* data_point = getDataByInternalId(internalId);
                 float* float_data = static_cast<float*>(data_point);
                 size_t dim = data_size_ / sizeof(float);
                 
-                // Convert to Eigen vector for LSH removal
                 Eigen::VectorXd eigen_point(dim);
                 for (size_t i = 0; i < dim; i++) {
                     eigen_point[i] = static_cast<double>(float_data[i]);
                 }
                 
                 lsh_index_->remove(eigen_point, static_cast<int>(internalId));
-            }
-            
-            // Step 2: Repair neighbors immediately before removal
-            if (enable_lsh_repair_ && lsh_index_) {
+                
+                // Step 2: Repair neighbors immediately before removal
                 repairNeighborsImmediately(internalId);
-            }
-            
-            // Step 3: Remove all connections TO this node from other nodes (only if LSH enabled)
-            if (enable_lsh_repair_) {
+                
+                // Step 3: Remove all connections TO this node from other nodes
                 removeAllIncomingConnections(internalId);
-            }
-            
-            // Step 4: Mark as deleted (existing flag mechanism)
-            unsigned char *ll_cur = ((unsigned char *)get_linklist0(internalId))+2;
-            *ll_cur |= DELETE_MARK;
-            num_deleted_ += 1;
-            
-            if (allow_replace_deleted_) {
-                std::unique_lock <std::mutex> lock_deleted_elements(deleted_elements_lock);
-                deleted_elements.insert(internalId);
+                
+                // Step 4: Mark as deleted
+                unsigned char *ll_cur = ((unsigned char *)get_linklist0(internalId))+2;
+                *ll_cur |= DELETE_MARK;
+                num_deleted_ += 1;
+                
+            } else {
+                // Neither LSH nor replacement - standard deletion
+                unsigned char *ll_cur = ((unsigned char *)get_linklist0(internalId))+2;
+                *ll_cur |= DELETE_MARK;
+                num_deleted_ += 1;
+                
+                if (allow_replace_deleted_) {
+                    std::unique_lock <std::mutex> lock_deleted_elements(deleted_elements_lock);
+                    deleted_elements.insert(internalId);
+                }
             }
         } else {
             throw std::runtime_error("The requested to delete element is already deleted");
