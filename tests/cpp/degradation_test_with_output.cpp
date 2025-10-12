@@ -254,10 +254,10 @@ std::unordered_set<hnswlib::tableint> findReachableNodes(hnswlib::HierarchicalNS
         return reachable;
     }
     
-    std::queue<hnswlib::tableint> bfs_queue;
     hnswlib::tableint entry_point = index->getEntryPoint();
     
-    // Start BFS from entry point
+    // Standard BFS from entry point
+    std::queue<hnswlib::tableint> bfs_queue;
     bfs_queue.push(entry_point);
     visited.insert(entry_point);
     
@@ -270,24 +270,29 @@ std::unordered_set<hnswlib::tableint> findReachableNodes(hnswlib::HierarchicalNS
         hnswlib::tableint current = bfs_queue.front();
         bfs_queue.pop();
         
-        // Only check layer 0 connections for reachability
-        auto ll_cur = index->get_linklist_at_level(current, 0);
-        int size = index->getListCount(ll_cur);
-        hnswlib::tableint* data = (hnswlib::tableint*)(ll_cur + 1);
+        // Get the maximum level for this node
+        int max_level = index->getElementLevel(current);
         
-        for (int i = 0; i < size; i++) {
-            hnswlib::tableint neighbor = data[i];
+        // Explore connections at ALL layers where this node exists (0 to max_level)
+        for (int layer = 0; layer <= max_level; layer++) {
+            auto ll_cur = index->get_linklist_at_level(current, layer);
+            int size = index->getListCount(ll_cur);
+            hnswlib::tableint* data = (hnswlib::tableint*)(ll_cur + 1);
             
-            // Visit all valid neighbors we haven't seen before (including deleted ones)
-            if (neighbor < index->cur_element_count && 
-                visited.find(neighbor) == visited.end()) {
+            for (int i = 0; i < size; i++) {
+                hnswlib::tableint neighbor = data[i];
                 
-                visited.insert(neighbor);
-                bfs_queue.push(neighbor);
-                
-                // Only count as reachable if the neighbor is NOT deleted
-                if (!index->isMarkedDeleted(neighbor)) {
-                    reachable.insert(neighbor);
+                // Visit all valid neighbors we haven't seen before (including deleted ones)
+                if (neighbor < index->cur_element_count && 
+                    visited.find(neighbor) == visited.end()) {
+                    
+                    visited.insert(neighbor);
+                    bfs_queue.push(neighbor);
+                    
+                    // Only count as reachable if the neighbor is NOT deleted
+                    if (!index->isMarkedDeleted(neighbor)) {
+                        reachable.insert(neighbor);
+                    }
                 }
             }
         }
