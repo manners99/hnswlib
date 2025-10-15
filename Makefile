@@ -25,7 +25,10 @@ test_large_sift:
 	g++ -std=c++11 -O3 tests/cpp/large_sift_degradation_test.cpp -o tests/cpp/large_sift_degradation_test
 	./tests/cpp/large_sift_degradation_test
 
+test_timing_only:
+	g++ -std=c++11 -O3 -march=native -DHAVE_CXX0X -fpic -ftree-vectorize tests/cpp/degradation_test_timing_only.cpp -o tests/cpp/degradation_test_timing_only
+
 clean:
-	rm -rf *.egg-info build dist tmp var tests/__pycache__ hnswlib.cpython*.so tests/cpp/graph_degradation_test tests/cpp/quick_degradation_test tests/cpp/sift_degradation_test tests/cpp/large_sift_degradation_test
+	rm -rf *.egg-info build dist tmp var tests/__pycache__ hnswlib.cpython*.so tests/cpp/graph_degradation_test tests/cpp/quick_degradation_test tests/cpp/sift_degradation_test tests/cpp/large_sift_degradation_test tests/cpp/degradation_test_timing_only
 
 .PHONY: dist
