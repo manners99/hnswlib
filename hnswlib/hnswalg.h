@@ -52,6 +52,9 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     char **linkLists_{nullptr};
     std::vector<int> element_levels_;  // keeps level of each element
 
+    // Bidirectional edge tracking for efficient deletion
+    std::vector<std::vector<std::unordered_set<tableint>>> incoming_edges_;  // incoming_edges_[node][level] = set of nodes that point to this node
+
     size_t data_size_{0};
 
     DISTFUNC<dist_t> fstdistfunc_;
@@ -165,6 +168,9 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
         mult_ = 1 / log(1.0 * M_);
         revSize_ = 1.0 / mult_;
 
+        // Initialize incoming edges tracking
+        incoming_edges_.resize(max_elements_);
+        
         // Initialize LSH if enabled
         if (enable_lsh_repair_) {
             size_t dim = data_size_ / sizeof(float);  // Assuming float vectors
@@ -1109,6 +1115,16 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
     void markDeletedInternal(tableint internalId) {
         assert(internalId < cur_element_count);
         if (!isMarkedDeleted(internalId)) {
+            
+            // Check if we're deleting the entry point and handle it
+            bool deleting_entry_point = (internalId == enterpoint_node_);
+            tableint new_entry_point = -1;
+            
+            if (deleting_entry_point) {
+                // Find a new entry point before deleting the current one
+                new_entry_point = findNewEntryPoint(internalId);
+            }
+            
             // When both LSH repair and replacement are enabled, use delayed deletion strategy
             if (enable_lsh_repair_ && allow_replace_deleted_) {
                 // Step 1: Remove from LSH index but keep graph structure for reuse
@@ -1135,7 +1151,7 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 deleted_elements.insert(internalId);
                 
             } else if (enable_lsh_repair_ && lsh_index_) {
-                // LSH enabled but replacement disabled - immediate cleanup
+                // LSH enabled - clean removal with replacement capability
                 // Step 1: Remove from LSH index
                 void* data_point = getDataByInternalId(internalId);
                 float* float_data = static_cast<float*>(data_point);
@@ -1154,10 +1170,19 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                 // Step 3: Remove all connections TO this node from other nodes
                 removeAllIncomingConnections(internalId);
                 
-                // Step 4: Mark as deleted
+                // Step 4: Clear all connections FROM this node
+                clearAllOutgoingConnections(internalId);
+                
+                // Step 5: Mark as deleted
                 unsigned char *ll_cur = ((unsigned char *)get_linklist0(internalId))+2;
                 *ll_cur |= DELETE_MARK;
                 num_deleted_ += 1;
+                
+                // Step 6: Add to replacement pool if replacement is enabled
+                if (allow_replace_deleted_) {
+                    std::unique_lock <std::mutex> lock_deleted_elements(deleted_elements_lock);
+                    deleted_elements.insert(internalId);
+                }
                 
             } else {
                 // Neither LSH nor replacement - standard deletion
@@ -1170,8 +1195,83 @@ class HierarchicalNSW : public AlgorithmInterface<dist_t> {
                     deleted_elements.insert(internalId);
                 }
             }
+            
+            // Update entry point if we deleted it
+            if (deleting_entry_point && new_entry_point != -1) {
+                enterpoint_node_ = new_entry_point;
+                // Also update maxlevel_ to maintain consistency
+                maxlevel_ = element_levels_[new_entry_point];
+            }
+            
         } else {
             throw std::runtime_error("The requested to delete element is already deleted");
+        }
+    }
+    
+    /*
+    * Find a new entry point when the current one is being deleted
+    */
+    tableint findNewEntryPoint(tableint current_entry_point) {
+        // Strategy: Find the highest-level non-deleted node
+        int best_level = -1;
+        tableint best_candidate = -1;
+        
+        for (tableint i = 0; i < cur_element_count; i++) {
+            if (i == current_entry_point || isMarkedDeleted(i)) continue;
+            
+            int node_level = element_levels_[i];
+            if (node_level > best_level) {
+                best_level = node_level;
+                best_candidate = i;
+            }
+        }
+        
+        return best_candidate;  // Returns -1 if no suitable candidate found
+    }
+
+    /*
+    * Find a new entry point from the highest available layer
+    * This mimics the logic used during insertion
+    */
+    void updateEntryPointAfterDeletion(tableint deleted_entry_point) {
+        // Find the highest level among all non-deleted nodes
+        int new_max_level = -1;
+        tableint new_entry_point = -1;
+        
+        for (tableint i = 0; i < cur_element_count; i++) {
+            if (i != deleted_entry_point && !isMarkedDeleted(i)) {
+                if (element_levels_[i] > new_max_level) {
+                    new_max_level = element_levels_[i];
+                    new_entry_point = i;
+                }
+            }
+        }
+        
+        // Update entry point and max level
+        if (new_entry_point != (tableint)-1) {
+            enterpoint_node_ = new_entry_point;
+            maxlevel_ = new_max_level;
+        } else {
+            // No valid nodes found - this should not happen in normal operation
+            enterpoint_node_ = -1;
+            maxlevel_ = -1;
+        }
+    }
+
+    /*
+    * Clear all outgoing connections from a deleted node
+    */
+    void clearAllOutgoingConnections(tableint deleted_node) {
+        // Clear level 0 connections
+        linklistsizeint *ll_cur = get_linklist0(deleted_node);
+        setListCount(ll_cur, 0);  // Set connection count to 0
+        
+        // Clear higher level connections if they exist
+        if (element_levels_[deleted_node] > 0) {
+            for (int level = 1; level <= element_levels_[deleted_node]; level++) {
+                linklistsizeint *ll_level = get_linklist(deleted_node, level);
+                setListCount(ll_level, 0);  // Set connection count to 0
+            }
         }
     }
 

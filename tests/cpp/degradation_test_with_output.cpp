@@ -342,8 +342,8 @@ int main(int argc, char* argv[]) {
     }
     
     // LSH configuration
-    int lsh_num_tables = 8;
-    int lsh_num_hashes = 10;
+    int lsh_num_tables = 6;
+    int lsh_num_hashes = 12;
     
     // Generate output filenames based on LSH configuration and dataset
     std::string base_filename;
